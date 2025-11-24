@@ -9,14 +9,12 @@ from contextlib import asynccontextmanager
 
 warnings.filterwarnings('ignore')
 
-# Folder tempat main.py berada
 BASE_DIR = Path(__file__).resolve().parent
 
 # =========================================================
-# 1. KONFIGURASI PROFIL & TEMPLATE (ISI ASLI ANDA)
+# 1. KONFIGURASI PROFIL & TEMPLATE
 # =========================================================
 
-# 5 Fitur asli dari model Anda (sesuai CSV)
 FEATURE_COLUMNS_TOTAL = [
     "total_active_days",
     "avg_completion_time_hours",
@@ -60,10 +58,6 @@ CLUSTER_PROFILES: Dict[int, Dict[str, Any]] = {
     },
 }
 
-# =========================================================
-# TEMPLATE KALIMAT INSIGHT UNTUK SETIAP CLUSTER
-# =========================================================
-
 CLUSTER_TEMPLATES: Dict[int, str] = {
     0: (
         "Aktivitas belajarmu masih jarang (sekitar {active_days:.0f} hari aktif), "
@@ -93,28 +87,24 @@ CLUSTER_TEMPLATES: Dict[int, str] = {
     ),
 }
 
-# Variable Global untuk Artifacts
 data_storage: Dict[str, Any] = {}
 
 # =========================================================
-# 2. LIFESPAN (STRUKTUR YANG DIINGINKAN)
+# 2. LIFESPAN
 # =========================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Startup: Memuat model dan data...")
     try:
-        # Load Model & Scaler (Pakai pickle sesuai file asli Anda)
         with open(BASE_DIR / "scaler.pkl", "rb") as f:
             data_storage['scaler'] = pickle.load(f)
         
         with open(BASE_DIR / "kmeans_model.pkl", "rb") as f:
             data_storage['model'] = pickle.load(f)
 
-        # Load Data CSV
         features_df = pd.read_csv(BASE_DIR / "clustered_students.csv")
         
-        # Validasi Kolom (Sesuai CSV Anda)
         if 'developer_id' not in features_df.columns:
             raise ValueError("CSV harus memiliki kolom 'developer_id'.")
         
@@ -122,7 +112,6 @@ async def lifespan(app: FastAPI):
         if missing_cols:
             raise ValueError(f"Kolom fitur berikut hilang: {missing_cols}")
                 
-        # Indexing untuk pencarian cepat
         features_df = features_df.drop_duplicates(subset=['developer_id'])
         features_df = features_df.set_index('developer_id')
         
@@ -145,11 +134,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AI Learning Insight API", version="1.0.0", lifespan=lifespan)
 
 # =========================================================
-# 3. PYDANTIC MODELS (STRUKTUR YANG DIINGINKAN)
+# 3. PYDANTIC MODELS
 # =========================================================
 
 class PredictIn(BaseModel):
-    developer_id: int # Disesuaikan agar cocok dengan data Anda
+    developer_id: int
     features: Optional[Dict[str, Any]] = None
 
 class PredictOutData(BaseModel):
@@ -159,7 +148,7 @@ class PredictOutData(BaseModel):
     developer_id: int
     developer_name: str
     cluster_id: int
-    insight_text: str # Tambahan agar insight Anda tetap muncul
+    insight_text: str
     features: Dict[str, Any]
 
 class PredictOutStatus(BaseModel):
@@ -179,7 +168,6 @@ class SimplePredictionOut(BaseModel):
 # =========================================================
 
 def _generate_insight_text(cluster_id: int, row: Dict[str, float]) -> str:
-    """Helper untuk membuat kalimat insight sesuai template asli"""
     template = CLUSTER_TEMPLATES.get(cluster_id, "")
     return template.format(
         active_days=row.get("total_active_days", 0),
@@ -190,11 +178,9 @@ def _generate_insight_text(cluster_id: int, row: Dict[str, float]) -> str:
     )
 
 def _predict_core(dev_id: int) -> Tuple[str, int, str, str, Dict[str, Any]]:
-    # 1. Cek Data di CSV
     try:
         user_data_series = data_storage['features'].loc[dev_id]
     except KeyError:
-        # Jika user tidak ada di CSV
         empty = {col: 0 for col in FEATURE_COLUMNS_TOTAL}
         return ("Not Active", -1, "Unknown User", "User tidak ditemukan.", empty)
     except Exception as e:
@@ -202,15 +188,12 @@ def _predict_core(dev_id: int) -> Tuple[str, int, str, str, Dict[str, Any]]:
 
     dev_name = str(user_data_series.get('developer_name', 'Unknown'))
     
-    # Ambil 5 fitur penting
     fitur_df = user_data_series[FEATURE_COLUMNS_TOTAL].to_frame().T
     raw_features = fitur_df.iloc[0].to_dict()
 
-    # 2. Cek apakah aktif (Logic: journeys > 0)
     if raw_features['total_journeys_completed'] == 0:
         return ("Not Active", -1, dev_name, "User belum menyelesaikan journey.", raw_features)
 
-    # 3. Prediksi Model
     try:
         scaler = data_storage['scaler']
         model = data_storage['model']
@@ -221,7 +204,6 @@ def _predict_core(dev_id: int) -> Tuple[str, int, str, str, Dict[str, Any]]:
         profile = CLUSTER_PROFILES.get(cluster_id, {})
         label = profile.get("label_id", f"Cluster {cluster_id}")
         
-        # Generate Text Insight Asli
         insight_text = _generate_insight_text(cluster_id, raw_features)
         
     except Exception as e:
@@ -249,15 +231,12 @@ async def predict_post(payload: PredictIn):
     ) = _predict_core(payload.developer_id)
 
     if label == "Not Active":
-        # Response untuk user tidak aktif / tidak ketemu
         return PredictOutStatus(
             status="error",
             message=insight_text, 
             data=None
         )
 
-    # Response Sukses
-    # 'reasons' diisi simple logic agar sesuai struktur referensi
     reasons = [
         {"key": "total_journeys_completed", "op": ">", "value": 0},
         {"key": "cluster_id", "value": cluster_id}
@@ -270,7 +249,7 @@ async def predict_post(payload: PredictIn):
         developer_id=payload.developer_id,
         developer_name=dev_name,
         cluster_id=cluster_id,
-        insight_text=insight_text, # Menampilkan insight yang sudah digenerate
+        insight_text=insight_text,
         features=raw_features
     )
     
@@ -282,7 +261,7 @@ async def predict_style_get(developer_id: int):
 
     status_msg = "Prediksi berhasil."
     if label == "Not Active":
-        status_msg = insight # Pesan error/info
+        status_msg = insight
 
     return SimplePredictionOut(
         developer_id=developer_id, 
@@ -294,5 +273,4 @@ async def predict_style_get(developer_id: int):
 
 if __name__ == "__main__":
     import uvicorn
-    # Port 8001 sesuai permintaan
     uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
